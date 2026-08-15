@@ -1,0 +1,33 @@
+2026-08-14T09:00:01Z INFO  [checkout-service] Service started, pool size=10
+2026-08-14T09:00:02Z INFO  [checkout-service] Connected to db-primary (host=db-primary.internal:5432)
+2026-08-14T09:12:04Z INFO  [checkout-service] Handling checkout request order_id=8841 user_id=203
+2026-08-14T09:12:04Z INFO  [checkout-service] Acquired db connection from pool (active=3/10)
+2026-08-14T09:12:05Z INFO  [checkout-service] Checkout order_id=8841 completed in 118ms
+2026-08-14T09:14:10Z INFO  [checkout-service] Handling checkout request order_id=8842 user_id=118
+2026-08-14T09:14:10Z INFO  [checkout-service] Acquired db connection from pool (active=4/10)
+2026-08-14T09:14:11Z INFO  [checkout-service] Checkout order_id=8842 completed in 96ms
+2026-08-14T09:20:33Z INFO  [checkout-service] Handling checkout request order_id=8843 user_id=340
+2026-08-14T09:20:33Z WARN  [checkout-service] db connection pool nearing capacity (active=9/10)
+2026-08-14T09:20:34Z INFO  [checkout-service] Checkout order_id=8843 completed in 210ms
+2026-08-14T09:31:47Z INFO  [checkout-service] Handling checkout request order_id=8844 user_id=552
+2026-08-14T09:31:47Z WARN  [checkout-service] db connection pool exhausted (active=10/10), request queued
+2026-08-14T09:31:52Z ERROR [checkout-service] Timeout acquiring db connection after 5000ms for order_id=8844
+2026-08-14T09:31:52Z ERROR [checkout-service] com.acme.db.PoolExhaustedException: no available connections in pool 'db-primary' (active=10/10, waiting=4)
+2026-08-14T09:31:52Z ERROR [checkout-service]     at ConnectionPool.acquire(ConnectionPool.java:142)
+2026-08-14T09:31:52Z ERROR [checkout-service]     at CheckoutHandler.beginTransaction(CheckoutHandler.java:58)
+2026-08-14T09:31:52Z ERROR [checkout-service]     at CheckoutHandler.handle(CheckoutHandler.java:31)
+2026-08-14T09:31:52Z ERROR [checkout-service] Checkout order_id=8844 FAILED: connection pool exhausted
+2026-08-14T09:32:03Z INFO  [checkout-service] Handling checkout request order_id=8845 user_id=771
+2026-08-14T09:32:08Z ERROR [checkout-service] Timeout acquiring db connection after 5000ms for order_id=8845
+2026-08-14T09:32:08Z ERROR [checkout-service] com.acme.db.PoolExhaustedException: no available connections in pool 'db-primary' (active=10/10, waiting=6)
+2026-08-14T09:32:08Z ERROR [checkout-service] Checkout order_id=8845 FAILED: connection pool exhausted
+2026-08-14T09:33:15Z INFO  [inventory-service] Long-running query detected: SELECT * FROM inventory WHERE warehouse_id=? (duration=47210ms, query_id=q-88213)
+2026-08-14T09:33:15Z WARN  [inventory-service] Query q-88213 is holding a db connection from pool 'db-primary' for 47210ms — likely cause of pool exhaustion
+2026-08-14T09:33:16Z INFO  [checkout-service] Handling checkout request order_id=8846 user_id=902
+2026-08-14T09:33:21Z ERROR [checkout-service] Timeout acquiring db connection after 5000ms for order_id=8846
+2026-08-14T09:33:21Z ERROR [checkout-service] Checkout order_id=8846 FAILED: connection pool exhausted
+2026-08-14T09:35:02Z INFO  [inventory-service] Query q-88213 completed after 168904ms, connection released
+2026-08-14T09:35:03Z INFO  [checkout-service] db connection pool recovering (active=6/10)
+2026-08-14T09:36:40Z INFO  [checkout-service] Handling checkout request order_id=8847 user_id=118
+2026-08-14T09:36:40Z INFO  [checkout-service] Acquired db connection from pool (active=7/10)
+2026-08-14T09:36:41Z INFO  [checkout-service] Checkout order_id=8847 completed in 104ms

@@ -1,0 +1,49 @@
+// Standalone smoke test: spawns our own built server over stdio and calls
+// each tool once, so we can verify the whole pipe works before wiring up a
+// real MCP client like Claude Desktop/Code.
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+async function main() {
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: ["dist/index.js"],
+  });
+
+  const client = new Client({ name: "loglens-smoke-test", version: "1.0.0" });
+  await client.connect(transport);
+
+  const { tools } = await client.listTools();
+  console.log(
+    "Registered tools:",
+    tools.map((t) => t.name)
+  );
+
+  console.log("\n--- search_logs('pool exhausted') ---");
+  const search = await client.callTool({
+    name: "search_logs",
+    arguments: { query: "pool exhausted", contextSize: 1 },
+  });
+  console.log(search.content[0].text);
+
+  console.log("\n--- get_error_context(lineId=13) ---");
+  const context = await client.callTool({
+    name: "get_error_context",
+    arguments: { lineId: 13, contextSize: 3 },
+  });
+  console.log(context.content[0].text);
+
+  console.log("\n--- summarize_incident('why did checkout fail') ---");
+  const summary = await client.callTool({
+    name: "summarize_incident",
+    arguments: { query: "checkout" },
+  });
+  console.log(summary.content[0].text);
+
+  await client.close();
+}
+
+main().catch((err) => {
+  console.error("Smoke test failed:", err);
+  process.exit(1);
+});
