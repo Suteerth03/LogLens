@@ -83,16 +83,38 @@ server.registerTool(
   {
     title: "Summarize Incident",
     description:
-      "Search the logs for a query and surface the grounding evidence for a root-cause investigation. " +
-      "(LLM-based summarization + hallucination-verification loop is a Week 2 addition — see README.)",
+      "Investigate a natural-language question about the logs: extracts search terms, retrieves " +
+      "grounding evidence, generates a root-cause hypothesis, and independently verifies that " +
+      "hypothesis against its own cited evidence before returning it (retrying once if unsupported).",
     inputSchema: {
-      query: z.string().describe("What you're investigating, e.g. 'why did checkout fail at 14:32'"),
+      query: z.string().describe("What you're investigating, e.g. 'why did checkout fail around 9:31'"),
     },
   },
   async ({ query }) => {
-    const matches = searchLogs(readLogLines(), query, { contextSize: 3 });
-    const summary = await summarizeIncident(query, matches);
-    return { content: [{ type: "text", text: summary }] };
+    const lines = readLogLines();
+    const result = await summarizeIncident(query, (term) =>
+      searchLogs(lines, term, { contextSize: 3 })
+    );
+
+    if ("error" in result) {
+      return { content: [{ type: "text", text: result.error }] };
+    }
+
+    const text = [
+      `Root cause (${result.confidence} confidence): ${result.rootCause}`,
+      "",
+      `Verification: ${result.verification.verdict} — ${result.verification.explanation}`,
+      result.retried ? "(Required one retry after the initial hypothesis was rejected as unsupported.)" : "",
+      "",
+      "Cited evidence:",
+      ...result.citedEvidence.map((e) => `  [${e.id}] ${e.line}`),
+      "",
+      `Search terms used: ${result.searchTermsUsed.join(", ")}`,
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+
+    return { content: [{ type: "text", text }] };
   }
 );
 

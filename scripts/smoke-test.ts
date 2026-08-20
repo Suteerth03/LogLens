@@ -33,12 +33,19 @@ async function main() {
   });
   console.log(context.content[0].text);
 
-  console.log("\n--- summarize_incident('why did checkout fail') ---");
-  const summary = await client.callTool({
-    name: "summarize_incident",
-    arguments: { query: "checkout" },
-  });
-  console.log(summary.content[0].text);
+  console.log("\n--- summarize_incident('why did checkout fail around 9:31') ---");
+  try {
+    const summary = await client.callTool({
+      name: "summarize_incident",
+      arguments: { query: "why did checkout fail around 9:31" },
+    });
+    console.log(summary.content[0].text);
+  } catch (err) {
+    console.log(
+      "summarize_incident failed — this step calls the Anthropic API and needs ANTHROPIC_API_KEY set.\n" +
+        `(${(err as Error).message})`
+    );
+  }
 
   await client.close();
 }

@@ -19,11 +19,12 @@ whether the model's answer is actually grounded in the log data.
 
 ## Status
 
-**Week 1 (current):** core server, 3 tools, working end-to-end against a
-sample log.
-**Week 2 (next):** LLM-based root-cause generation in `summarize_incident`,
-plus the hallucination-verification loop.
-**Week 3:** Docker + Azure deployment, eval set, polish.
+**Week 1:** core server, 3 tools, working end-to-end against a sample log. ✅
+**Week 2 (current):** LLM-based root-cause generation in `summarize_incident`,
+plus a hallucination-verification loop that independently checks the
+hypothesis against its own cited evidence and retries once if unsupported. ✅
+**Week 3 (next):** Docker + Azure deployment, an eval set (accuracy
+measurement, not just a demo), polish.
 
 ## Tools
 
@@ -31,7 +32,22 @@ plus the hallucination-verification loop.
 |---|---|
 | `search_logs` | Keyword search over the log file; returns matches with surrounding context and a line `id`. |
 | `get_error_context` | Given a line `id`, returns a wider window of lines — full stack traces, sequence of events. |
-| `summarize_incident` | Searches for a query and surfaces grounding evidence. *(LLM summarization + verification loop: Week 2.)* |
+| `summarize_incident` | Extracts search terms from a natural-language question (Haiku), retrieves evidence, generates a root-cause hypothesis (Opus), then independently verifies the hypothesis against its own cited evidence — retrying once if the verifier rejects it as unsupported. |
+
+### The verification loop, concretely
+
+1. **Extract** — Haiku turns "why did checkout fail around 9:31" into search terms like `pool exhausted`, `Timeout acquiring db connection`.
+2. **Retrieve** — those terms are run through `search_logs`; results are deduplicated into one evidence set.
+3. **Hypothesize** — Opus proposes a root cause and cites specific evidence line `id`s it's basing the claim on.
+4. **Verify** — a *separate* Opus call, given only the cited lines (not the full evidence set, not the hypothesis-generation context), judges whether those lines actually support the claim. This is the hallucination check: the model that wrote the claim doesn't get to grade its own homework.
+5. **Retry once** if the verdict is `not_supported` — regenerate with an explicit "be conservative" instruction, then re-verify.
+
+## Environment variables
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `summarize_incident` | Get one at [console.anthropic.com](https://console.anthropic.com). `search_logs` and `get_error_context` work without it. |
+| `LOGLENS_LOG_FILE` | optional | Point at a real log file instead of the bundled sample. |
 
 ## Setup
 
