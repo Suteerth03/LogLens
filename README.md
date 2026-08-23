@@ -44,7 +44,18 @@ measurement, not just a demo), polish.
 
 Uses the free-tier Gemini API rather than a paid one — a deliberate cost tradeoff for a project run repeatedly during development. Model IDs are centralized as `FLASH`/`PRO` constants at the top of `summarize.ts`; **as of testing, pro-tier models return `limit: 0` on this free-tier key** (a hard quota wall, not a temporary rate limit) — currently both constants point at Flash until that's resolved or a paid tier is added. Swapping to another provider entirely is a small, isolated change confined to that one file.
 
-**Known limitation, found via real testing, not assumed:** verified end-to-end against the bundled sample log — `summarize_incident` correctly found the *immediate* cause of a checkout failure (DB connection pool exhaustion) but didn't surface the *upstream* root cause the fixture also encodes (a long-running unindexed query on a different service holding the connection). The extracted search terms were scoped to the failing service only, so cross-service evidence never entered the retrieval set. This is a retrieval-scope gap, not a hallucination — the verification step correctly marked the (narrower) claim as `supported`, which it genuinely was. Fixing this — broadening extraction to consider upstream/adjacent services, or supporting a drill-down follow-up query — is a real Week 3 candidate.
+### How the cross-service gap was found and closed
+
+Earlier testing surfaced a real limitation: `summarize_incident` correctly found the *immediate* cause of a checkout failure (DB pool exhaustion) but missed the *upstream* cause the fixture also encodes — a long-running query on a different service holding the connection. Two structural problems, both since fixed:
+
+- **Retrieval was purely lexical.** Extracted terms were checkout-scoped (`checkout`, `failed`, `error`), so `inventory-service` lines could never enter the evidence set no matter how good the reasoning was. Fixed with **time-window expansion**: after the term search, lines within ±120s of the *anomalous* (ERROR/WARN) matches are pulled in regardless of term match, capped at 150 and seeded from anomalies so a wide match span can't drag in the whole file.
+- **The verifier could only rubber-stamp.** It was handed *only* the lines the claim cited, which made it structurally incapable of noticing an incomplete answer — a claim that accurately describes a symptom will always look supported by the lines it chose to cite. It now sees the **full** evidence set and scores two independent axes: `soundness` (do the cited lines substantiate the claim?) and `completeness` (does other retrieved evidence point to a cause the claim missed?). A sound-but-incomplete verdict feeds the overlooked line ids back into regeneration, rather than re-prompting against identical evidence as the old retry did.
+
+After the fix, the same query returns the upstream cause — *"...caused by a long-running query (q-88213) in inventory-service holding a database connection for nearly three minutes"* — citing the three lines that entered via expansion. Search terms were unchanged, confirming expansion did the work.
+
+**Honest caveat:** in that run the answer was correct on the first pass, so the completeness axis never had to fire. It's exercised by construction but not yet proven by a failing case — a good target for the eval set.
+
+**Latency tradeoff:** a full pass is now up to 4 sequential LLM calls (~70s observed on the sample log). This exceeds the **60s default request timeout in MCP clients** — raise it when connecting a real client, as `scripts/smoke-test.ts` does.
 
 ## Environment variables
 
