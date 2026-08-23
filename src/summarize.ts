@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import type { SearchMatch } from "./logParser.js";
+import { searchLogs, expandByTimeWindow, type LogLine } from "./logParser.js";
 
 // Mixed-model strategy: Flash for the cheap keyword-extraction step, Pro for
 // the two steps where reasoning quality actually matters (root-cause
@@ -49,10 +49,28 @@ const HYPOTHESIS_SCHEMA = {
 const VERIFICATION_SCHEMA = {
   type: "object",
   properties: {
-    verdict: { type: "string", enum: ["supported", "partially_supported", "not_supported"] },
-    explanation: { type: "string", description: "Why the cited lines do or do not support the root-cause claim." },
+    soundness: {
+      type: "string",
+      enum: ["supported", "partially_supported", "not_supported"],
+      description: "Do the CITED lines actually substantiate the claim?",
+    },
+    completeness: {
+      type: "string",
+      enum: ["complete", "incomplete"],
+      description:
+        "Does the claim account for everything the FULL evidence set shows, or does other retrieved " +
+        "evidence point to a deeper/upstream cause the claim missed?",
+    },
+    explanation: { type: "string" },
+    overlookedLineIds: {
+      type: "array",
+      items: { type: "integer" },
+      description:
+        "Ids of retrieved lines that the claim fails to account for — especially ones suggesting a " +
+        "deeper cause. Empty if the claim is complete.",
+    },
   },
-  required: ["verdict", "explanation"],
+  required: ["soundness", "completeness", "explanation", "overlookedLineIds"],
 } as const;
 
 interface SearchTerms {
@@ -63,9 +81,11 @@ interface Hypothesis {
   confidence: "high" | "medium" | "low";
   citedLineIds: number[];
 }
-interface Verification {
-  verdict: "supported" | "partially_supported" | "not_supported";
+export interface Verification {
+  soundness: "supported" | "partially_supported" | "not_supported";
+  completeness: "complete" | "incomplete";
   explanation: string;
+  overlookedLineIds: number[];
 }
 
 async function generateJson<T>(model: string, systemInstruction: string, prompt: string, schema: object): Promise<T | null> {
@@ -89,7 +109,7 @@ async function generateJson<T>(model: string, systemInstruction: string, prompt:
 /**
  * Step 1: turn a natural-language question into search terms likely to
  * appear verbatim in log lines, instead of substring-matching the raw
- * question (the Week 1 limitation noted in the README).
+ * question.
  */
 async function extractSearchTerms(query: string): Promise<string[]> {
   const result = await generateJson<SearchTerms>(
@@ -106,41 +126,94 @@ async function extractSearchTerms(query: string): Promise<string[]> {
 export interface IncidentEvidence {
   id: number;
   line: string;
+  /** True when this line entered the evidence set via time-window expansion, not a term match. */
+  viaExpansion?: boolean;
+}
+
+function renderEvidence(evidence: IncidentEvidence[]): string {
+  return evidence.map((e) => `[id=${e.id}] ${e.line}`).join("\n");
 }
 
 /** Step 2: generate a root-cause hypothesis grounded only in retrieved evidence. */
-async function generateHypothesis(query: string, evidence: IncidentEvidence[]): Promise<Hypothesis | null> {
-  const evidenceText = evidence.map((e) => `[id=${e.id}] ${e.line}`).join("\n");
+async function generateHypothesis(
+  query: string,
+  evidence: IncidentEvidence[],
+  guidance?: string
+): Promise<Hypothesis | null> {
+  const prompt = [
+    `Question: ${query}`,
+    "",
+    "Retrieved log evidence:",
+    renderEvidence(evidence),
+    guidance ? `\nIMPORTANT GUIDANCE FROM A PREVIOUS REVIEW:\n${guidance}` : "",
+  ].join("\n");
+
   return generateJson<Hypothesis>(
     PRO,
     "You are a root-cause analysis assistant for application logs. You are given a question " +
       "and a set of retrieved log lines, each tagged with an id. Base your root-cause hypothesis " +
       "ONLY on these lines — do not invent services, errors, or events not present in the evidence. " +
-      "Cite the specific line ids that support your conclusion.",
-    `Question: ${query}\n\nRetrieved log evidence:\n${evidenceText}`,
+      "Look past the immediate failure: if the evidence shows an upstream or cross-service cause " +
+      "(something holding a resource, a slow dependency), that is the root cause, not the symptom " +
+      "it produced. Cite the specific line ids that support your conclusion.",
+    prompt,
     HYPOTHESIS_SCHEMA
   );
 }
 
 /**
- * Step 3 — the hallucination-check loop: independently judge whether the
- * *cited* lines actually support the claim, rather than trusting the model
- * that generated the claim to grade its own homework.
+ * Step 3 — verification on two independent axes.
+ *
+ * The earlier single-axis version was handed ONLY the cited lines, which made
+ * it structurally incapable of catching an incomplete answer: a claim that
+ * correctly describes a symptom will always look "supported" by the lines it
+ * chose to cite. Real testing hit exactly that — a verdict of `supported` on
+ * an answer that missed the actual upstream cause. So the verifier now also
+ * sees the FULL evidence set and judges:
+ *   - soundness:    do the cited lines substantiate the claim?
+ *   - completeness: does other retrieved evidence point somewhere the claim missed?
  */
-async function verifyHypothesis(hypothesis: Hypothesis, citedEvidence: IncidentEvidence[]): Promise<Verification> {
-  const evidenceText =
-    citedEvidence.map((e) => `[id=${e.id}] ${e.line}`).join("\n") ||
+async function verifyHypothesis(
+  hypothesis: Hypothesis,
+  citedEvidence: IncidentEvidence[],
+  allEvidence: IncidentEvidence[]
+): Promise<Verification> {
+  const citedText =
+    renderEvidence(citedEvidence) ||
     "(none — the hypothesis cited no line ids that exist in the retrieved evidence)";
+
+  const prompt = [
+    `Claim: ${hypothesis.rootCause}`,
+    "",
+    "Lines the claim cites as support:",
+    citedText,
+    "",
+    "FULL retrieved evidence set (includes lines the claim did not cite):",
+    renderEvidence(allEvidence),
+  ].join("\n");
+
   const result = await generateJson<Verification>(
     PRO,
-    "You are a strict fact-checker. Given a root-cause claim and ONLY the specific log lines it " +
-      "cites as support, judge whether those lines actually substantiate the claim. Be skeptical: " +
-      "a plausible-sounding claim not directly backed by the cited lines is 'not_supported' or " +
-      "'partially_supported', never 'supported'.",
-    `Claim: ${hypothesis.rootCause}\n\nCited evidence:\n${evidenceText}`,
+    "You are a strict fact-checker for root-cause claims about logs. Judge two things independently. " +
+      "(1) SOUNDNESS: do the cited lines actually substantiate the claim? Be skeptical — a " +
+      "plausible-sounding claim not directly backed by its cited lines is not 'supported'. " +
+      "(2) COMPLETENESS: scan the FULL evidence set for anything the claim fails to account for. " +
+      "If other lines reveal a deeper or upstream cause — another service holding a shared resource, " +
+      "a slow query, a dependency failure — then the claim describes a symptom rather than the root " +
+      "cause and is 'incomplete'. List those overlooked line ids. A claim can be perfectly sound and " +
+      "still incomplete; judge the axes separately.",
+    prompt,
     VERIFICATION_SCHEMA
   );
-  return result ?? { verdict: "not_supported", explanation: "Verification call failed to parse." };
+
+  return (
+    result ?? {
+      soundness: "not_supported",
+      completeness: "incomplete",
+      explanation: "Verification call failed to parse.",
+      overlookedLineIds: [],
+    }
+  );
 }
 
 export interface IncidentSummary {
@@ -149,17 +222,21 @@ export interface IncidentSummary {
   verification: Verification;
   citedEvidence: IncidentEvidence[];
   searchTermsUsed: string[];
+  evidenceCount: { fromSearch: number; fromExpansion: number };
   retried: boolean;
 }
 
+const ANOMALY_LEVELS = new Set(["ERROR", "FATAL", "WARN", "WARNING"]);
+
 /**
- * Full pipeline: extract search terms -> retrieve evidence -> generate a
- * grounded hypothesis -> verify it against its own cited evidence -> if
- * unsupported, retry once with an explicit "be conservative" instruction.
+ * Full pipeline: extract search terms -> retrieve (lexical + time-window
+ * expansion) -> generate a grounded hypothesis -> verify on soundness and
+ * completeness -> regenerate once if unsound or incomplete, feeding back the
+ * lines the first attempt overlooked.
  */
 export async function summarizeIncident(
   query: string,
-  searchFn: (term: string) => SearchMatch[]
+  lines: LogLine[]
 ): Promise<IncidentSummary | { error: string }> {
   // Fail fast with a clear message — without this, an unset key makes the
   // SDK fall back to trying Google Cloud Application Default Credentials
@@ -173,33 +250,59 @@ export async function summarizeIncident(
 
   const evidenceById = new Map<number, IncidentEvidence>();
   for (const term of terms) {
-    for (const m of searchFn(term)) {
+    for (const m of searchLogs(lines, term, { contextSize: 3 })) {
       evidenceById.set(m.id, { id: m.id, line: m.line });
     }
   }
-  const evidence = [...evidenceById.values()].sort((a, b) => a.id - b.id);
+  const fromSearch = evidenceById.size;
 
-  if (evidence.length === 0) {
+  if (fromSearch === 0) {
     return { error: `No log evidence found for "${query}" (searched: ${terms.join(", ")}).` };
   }
+
+  // Seed the time window from the anomalous matches where possible — seeding
+  // from every match (including routine INFO lines spanning the whole file)
+  // would widen the window to the entire log and defeat the point.
+  const byId = new Map(lines.map((l) => [l.id, l]));
+  const matchedIds = [...evidenceById.keys()];
+  const anomalyIds = matchedIds.filter((id) => {
+    const level = byId.get(id)?.level?.toUpperCase();
+    return level !== undefined && ANOMALY_LEVELS.has(level);
+  });
+  const seedIds = anomalyIds.length > 0 ? anomalyIds : matchedIds;
+
+  for (const l of expandByTimeWindow(lines, seedIds)) {
+    evidenceById.set(l.id, { id: l.id, line: l.raw, viaExpansion: true });
+  }
+
+  const evidence = [...evidenceById.values()].sort((a, b) => a.id - b.id);
+  const evidenceCount = { fromSearch, fromExpansion: evidence.length - fromSearch };
 
   let hypothesis = await generateHypothesis(query, evidence);
   if (!hypothesis) return { error: "Failed to generate a hypothesis (LLM parse failure)." };
 
   let citedEvidence = evidence.filter((e) => hypothesis!.citedLineIds.includes(e.id));
-  let verification = await verifyHypothesis(hypothesis, citedEvidence);
+  let verification = await verifyHypothesis(hypothesis, citedEvidence, evidence);
   let retried = false;
 
-  if (verification.verdict === "not_supported") {
+  if (verification.soundness === "not_supported" || verification.completeness === "incomplete") {
     retried = true;
-    hypothesis = await generateHypothesis(
-      `${query}\n\n(Note: a previous attempt was rejected as unsupported by the evidence — ` +
-        `be conservative and only claim what the lines directly show.)`,
-      evidence
-    );
+
+    const overlooked = evidence.filter((e) => verification.overlookedLineIds.includes(e.id));
+    const guidance = [
+      `A previous attempt was rejected (soundness: ${verification.soundness}, completeness: ${verification.completeness}).`,
+      `Reviewer's reasoning: ${verification.explanation}`,
+      overlooked.length > 0
+        ? `You overlooked these lines — account for them, and consider whether they reveal the ` +
+          `true upstream cause rather than the symptom you described:\n${renderEvidence(overlooked)}`
+        : "Only claim what the evidence directly shows.",
+    ].join("\n");
+
+    hypothesis = await generateHypothesis(query, evidence, guidance);
     if (!hypothesis) return { error: "Failed to generate a hypothesis on retry." };
+
     citedEvidence = evidence.filter((e) => hypothesis!.citedLineIds.includes(e.id));
-    verification = await verifyHypothesis(hypothesis, citedEvidence);
+    verification = await verifyHypothesis(hypothesis, citedEvidence, evidence);
   }
 
   return {
@@ -208,6 +311,7 @@ export async function summarizeIncident(
     verification,
     citedEvidence,
     searchTermsUsed: terms,
+    evidenceCount,
     retried,
   };
 }

@@ -39,11 +39,20 @@ async function main() {
 
   console.log("\n--- summarize_incident('why did checkout fail around 9:31') ---");
   try {
-    const summary = await client.callTool({
-      name: "summarize_incident",
-      arguments: { query: "why did checkout fail around 9:31" },
-    });
+    // Generous timeout: the pipeline makes up to 4 sequential LLM calls
+    // (generate -> verify -> regenerate -> re-verify), which overruns the
+    // MCP client's 60s default. Real clients need the same allowance.
+    const started = Date.now();
+    const summary = await client.callTool(
+      {
+        name: "summarize_incident",
+        arguments: { query: "why did checkout fail around 9:31" },
+      },
+      undefined,
+      { timeout: 300_000 }
+    );
     console.log(summary.content[0].text);
+    console.log(`\n(took ${((Date.now() - started) / 1000).toFixed(1)}s)`);
   } catch (err) {
     console.log(
       "summarize_incident failed — this step calls the Gemini API and needs GEMINI_API_KEY set.\n" +

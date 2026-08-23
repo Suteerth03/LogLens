@@ -84,32 +84,36 @@ server.registerTool(
     title: "Summarize Incident",
     description:
       "Investigate a natural-language question about the logs: extracts search terms, retrieves " +
-      "grounding evidence, generates a root-cause hypothesis, and independently verifies that " +
-      "hypothesis against its own cited evidence before returning it (retrying once if unsupported).",
+      "grounding evidence (lexical matches plus lines from the same time window, which surfaces " +
+      "cross-service causes the question never named), generates a root-cause hypothesis, then " +
+      "verifies it on two axes — whether the cited lines support it, and whether it accounts for " +
+      "everything the evidence shows — regenerating once if it is unsound or incomplete.",
     inputSchema: {
       query: z.string().describe("What you're investigating, e.g. 'why did checkout fail around 9:31'"),
     },
   },
   async ({ query }) => {
-    const lines = readLogLines();
-    const result = await summarizeIncident(query, (term) =>
-      searchLogs(lines, term, { contextSize: 3 })
-    );
+    const result = await summarizeIncident(query, readLogLines());
 
     if ("error" in result) {
       return { content: [{ type: "text", text: result.error }] };
     }
 
+    const { verification: v, evidenceCount: n } = result;
     const text = [
       `Root cause (${result.confidence} confidence): ${result.rootCause}`,
       "",
-      `Verification: ${result.verification.verdict} — ${result.verification.explanation}`,
-      result.retried ? "(Required one retry after the initial hypothesis was rejected as unsupported.)" : "",
+      `Verification — soundness: ${v.soundness}, completeness: ${v.completeness}`,
+      v.explanation,
+      result.retried
+        ? "(Regenerated once: the first hypothesis was rejected as unsound or incomplete.)"
+        : "",
       "",
       "Cited evidence:",
       ...result.citedEvidence.map((e) => `  [${e.id}] ${e.line}`),
       "",
       `Search terms used: ${result.searchTermsUsed.join(", ")}`,
+      `Evidence retrieved: ${n.fromSearch} by term match, ${n.fromExpansion} by time-window expansion`,
     ]
       .filter((l) => l !== "")
       .join("\n");

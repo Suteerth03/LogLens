@@ -57,6 +57,56 @@ export function searchLogs(
     }));
 }
 
+function parseTimestampMs(ts: string | undefined): number | null {
+  if (!ts) return null;
+  const ms = Date.parse(ts.replace(" ", "T"));
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * Returns lines that fall within `windowSeconds` of the seed lines but were
+ * NOT themselves matched by any search term.
+ *
+ * This is what catches cross-service root causes: a question about
+ * "checkout failing" produces checkout-scoped search terms, so the upstream
+ * service actually holding the resource never enters the evidence set by
+ * lexical match alone — but it is right there in the same time window.
+ *
+ * Capped by `maxLines`, keeping the lines closest in time to a seed, so a
+ * wide seed span can't pull an entire log file into the prompt.
+ */
+export function expandByTimeWindow(
+  lines: LogLine[],
+  seedIds: number[],
+  windowSeconds = 120,
+  maxLines = 150
+): LogLine[] {
+  const seeds = new Set(seedIds);
+  const seedTimes = lines
+    .filter((l) => seeds.has(l.id))
+    .map((l) => parseTimestampMs(l.timestamp))
+    .filter((t): t is number => t !== null);
+
+  if (seedTimes.length === 0) return [];
+
+  const windowMs = windowSeconds * 1000;
+  const from = Math.min(...seedTimes) - windowMs;
+  const to = Math.max(...seedTimes) + windowMs;
+
+  return lines
+    .filter((l) => !seeds.has(l.id))
+    .map((l) => ({ line: l, t: parseTimestampMs(l.timestamp) }))
+    .filter((e): e is { line: LogLine; t: number } => e.t !== null && e.t >= from && e.t <= to)
+    .map((e) => ({
+      line: e.line,
+      distance: Math.min(...seedTimes.map((s) => Math.abs(s - e.t))),
+    }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, maxLines)
+    .map((e) => e.line)
+    .sort((a, b) => a.id - b.id);
+}
+
 export interface Context {
   target: string;
   before: string[];
