@@ -36,17 +36,19 @@ measurement, not just a demo), polish.
 
 ### The verification loop, concretely
 
-1. **Extract** — Haiku turns "why did checkout fail around 9:31" into search terms like `pool exhausted`, `Timeout acquiring db connection`.
+1. **Extract** — Gemini 2.5 Flash turns "why did checkout fail around 9:31" into search terms like `pool exhausted`, `Timeout acquiring db connection`.
 2. **Retrieve** — those terms are run through `search_logs`; results are deduplicated into one evidence set.
-3. **Hypothesize** — Opus proposes a root cause and cites specific evidence line `id`s it's basing the claim on.
-4. **Verify** — a *separate* Opus call, given only the cited lines (not the full evidence set, not the hypothesis-generation context), judges whether those lines actually support the claim. This is the hallucination check: the model that wrote the claim doesn't get to grade its own homework.
+3. **Hypothesize** — Gemini 2.5 Pro proposes a root cause and cites specific evidence line `id`s it's basing the claim on.
+4. **Verify** — a *separate* Pro call, given only the cited lines (not the full evidence set, not the hypothesis-generation context), judges whether those lines actually support the claim. This is the hallucination check: the model that wrote the claim doesn't get to grade its own homework.
 5. **Retry once** if the verdict is `not_supported` — regenerate with an explicit "be conservative" instruction, then re-verify.
+
+Uses the free-tier Gemini API (Flash for the cheap extraction step, Pro for the two reasoning-heavy steps) rather than a paid API — a deliberate cost tradeoff for a project run repeatedly during development; swapping the model constants in `summarize.ts` to another provider is a small, isolated change if that ever needs to move.
 
 ## Environment variables
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `summarize_incident` | Get one at [console.anthropic.com](https://console.anthropic.com). `search_logs` and `get_error_context` work without it. |
+| `GEMINI_API_KEY` | `summarize_incident` | Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). `search_logs` and `get_error_context` work without it. |
 | `LOGLENS_LOG_FILE` | optional | Point at a real log file instead of the bundled sample. |
 
 ## Setup

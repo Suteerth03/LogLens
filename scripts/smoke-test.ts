@@ -42,7 +42,7 @@ async function main() {
     console.log(summary.content[0].text);
   } catch (err) {
     console.log(
-      "summarize_incident failed — this step calls the Anthropic API and needs ANTHROPIC_API_KEY set.\n" +
+      "summarize_incident failed — this step calls the Gemini API and needs GEMINI_API_KEY set.\n" +
         `(${(err as Error).message})`
     );
   }
