@@ -97,7 +97,7 @@ export const CASES: EvalCase[] = [
       "tokens whose 'nbf' claim appeared to be in the future.",
     mustMention: [
       ["clock", "ntp", "time", "skew", "drift"],
-      ["node-c"],
+      ["nodec"], // matched separator-insensitively — see normalizeForMatch in run-evals.ts
     ],
     mustCite: [[1, 8]],
   },

@@ -51,8 +51,23 @@ function normalize(s: string): string {
     .replace(/\u00a0/g, " "); // non-breaking space
 }
 
+/**
+ * A second pass, applied only inside hitsGroup: strips separators entirely
+ * so "node-c", "node c", and "node_c" are the same token. Case 06 scored a
+ * correct answer as FAIL twice for two different reasons — a Unicode hyphen
+ * variant, then a plain space instead of a hyphen — because compound
+ * identifiers get re-punctuated freely by the model. Cases spell these as
+ * one word (e.g. "nodec") to signal "match separator-insensitively."
+ * Substring matching was already word-boundary-free before this, so
+ * stripping separators doesn't introduce a new class of false positive.
+ */
+const stripSeparators = (s: string): string => s.replace(/[-_'\s]/g, "");
+
 const hitsGroup = (haystack: string, group: string[]) =>
-  group.some((needle) => haystack.includes(normalize(needle)));
+  group.some((needle) => {
+    const n = normalize(needle);
+    return haystack.includes(n) || stripSeparators(haystack).includes(stripSeparators(n));
+  });
 
 /**
  * The free tier enforces a per-DAY request cap (20 at time of writing) as well
