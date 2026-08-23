@@ -5,8 +5,11 @@ import type { SearchMatch } from "./logParser.js";
 // the two steps where reasoning quality actually matters (root-cause
 // generation and the hallucination-check verification pass). Same split as
 // the original Haiku/Opus design — just swapped to Gemini's free tier.
-const FLASH = "gemini-2.5-flash";
-const PRO = "gemini-2.5-pro";
+const FLASH = "gemini-3.6-flash";
+// Free tier currently shows zero quota for pro-tier models on this key
+// (confirmed via a live 429 with `limit: 0`, not a temporary rate limit) —
+// using Flash for all three steps until that's resolved. See README.
+const PRO = "gemini-3.6-flash";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 

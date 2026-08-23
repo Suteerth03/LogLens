@@ -8,6 +8,10 @@ async function main() {
   const transport = new StdioClientTransport({
     command: "node",
     args: ["dist/index.js"],
+    // StdioClientTransport spawns the server with a sanitized default
+    // environment, not a full inherited one — without this, GEMINI_API_KEY
+    // (and LOGLENS_LOG_FILE) never reach the child process even if set here.
+    env: process.env as Record<string, string>,
   });
 
   const client = new Client({ name: "loglens-smoke-test", version: "1.0.0" });

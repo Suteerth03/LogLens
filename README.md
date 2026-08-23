@@ -36,13 +36,15 @@ measurement, not just a demo), polish.
 
 ### The verification loop, concretely
 
-1. **Extract** — Gemini 2.5 Flash turns "why did checkout fail around 9:31" into search terms like `pool exhausted`, `Timeout acquiring db connection`.
+1. **Extract** — Gemini Flash turns "why did checkout fail around 9:31" into search terms like `checkout`, `CheckoutFailed`.
 2. **Retrieve** — those terms are run through `search_logs`; results are deduplicated into one evidence set.
-3. **Hypothesize** — Gemini 2.5 Pro proposes a root cause and cites specific evidence line `id`s it's basing the claim on.
-4. **Verify** — a *separate* Pro call, given only the cited lines (not the full evidence set, not the hypothesis-generation context), judges whether those lines actually support the claim. This is the hallucination check: the model that wrote the claim doesn't get to grade its own homework.
+3. **Hypothesize** — Gemini proposes a root cause and cites specific evidence line `id`s it's basing the claim on.
+4. **Verify** — a *separate* call, given only the cited lines (not the full evidence set, not the hypothesis-generation context), judges whether those lines actually support the claim. This is the hallucination check: the model that wrote the claim doesn't get to grade its own homework.
 5. **Retry once** if the verdict is `not_supported` — regenerate with an explicit "be conservative" instruction, then re-verify.
 
-Uses the free-tier Gemini API (Flash for the cheap extraction step, Pro for the two reasoning-heavy steps) rather than a paid API — a deliberate cost tradeoff for a project run repeatedly during development; swapping the model constants in `summarize.ts` to another provider is a small, isolated change if that ever needs to move.
+Uses the free-tier Gemini API rather than a paid one — a deliberate cost tradeoff for a project run repeatedly during development. Model IDs are centralized as `FLASH`/`PRO` constants at the top of `summarize.ts`; **as of testing, pro-tier models return `limit: 0` on this free-tier key** (a hard quota wall, not a temporary rate limit) — currently both constants point at Flash until that's resolved or a paid tier is added. Swapping to another provider entirely is a small, isolated change confined to that one file.
+
+**Known limitation, found via real testing, not assumed:** verified end-to-end against the bundled sample log — `summarize_incident` correctly found the *immediate* cause of a checkout failure (DB connection pool exhaustion) but didn't surface the *upstream* root cause the fixture also encodes (a long-running unindexed query on a different service holding the connection). The extracted search terms were scoped to the failing service only, so cross-service evidence never entered the retrieval set. This is a retrieval-scope gap, not a hallucination — the verification step correctly marked the (narrower) claim as `supported`, which it genuinely was. Fixing this — broadening extraction to consider upstream/adjacent services, or supporting a drill-down follow-up query — is a real Week 3 candidate.
 
 ## Environment variables
 
@@ -85,11 +87,16 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) and add:
   "mcpServers": {
     "loglens": {
       "command": "node",
-      "args": ["C:\\Users\\sarve\\OneDrive\\Desktop\\LogLens\\dist\\index.js"]
+      "args": ["C:\\Users\\sarve\\OneDrive\\Desktop\\LogLens\\dist\\index.js"],
+      "env": {
+        "GEMINI_API_KEY": "your-key-here"
+      }
     }
   }
 }
 ```
+
+**The `env` block is required, not optional** — MCP clients spawn the server with a sanitized environment by default, not your shell's full environment, so `GEMINI_API_KEY` won't be visible to `summarize_incident` without it even if it's set globally on your machine.
 
 Restart Claude Desktop, then ask it something like *"search the logs for
 'pool exhausted'"* — it should call `search_logs` automatically.
@@ -97,8 +104,10 @@ Restart Claude Desktop, then ask it something like *"search the logs for
 ### Connect to Claude Code
 
 ```bash
-claude mcp add loglens -- node C:\Users\sarve\OneDrive\Desktop\LogLens\dist\index.js
+claude mcp add loglens --scope user --env GEMINI_API_KEY=your-key-here -- node C:\Users\sarve\OneDrive\Desktop\LogLens\dist\index.js
 ```
+
+(Same reason as above — `--env` passes the key explicitly since the spawned process doesn't inherit your shell environment by default.)
 
 ## Project structure
 
