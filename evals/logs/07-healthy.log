@@ -1,0 +1,11 @@
+2026-08-14T08:00:00Z INFO  [orders-service] Service started, pool size=20
+2026-08-14T08:00:01Z INFO  [orders-service] Connected to db-primary
+2026-08-14T08:12:33Z INFO  [orders-service] Order order_id=1001 completed in 88ms
+2026-08-14T08:19:07Z INFO  [orders-service] Order order_id=1002 completed in 74ms
+2026-08-14T08:26:41Z INFO  [orders-service] Scheduled cache refresh completed (1204 entries)
+2026-08-14T08:33:12Z INFO  [orders-service] Order order_id=1003 completed in 91ms
+2026-08-14T08:44:55Z INFO  [orders-service] Health check passed, heap used=402MB/2048MB
+2026-08-14T08:51:20Z INFO  [orders-service] Order order_id=1004 completed in 69ms
+2026-08-14T08:58:02Z INFO  [orders-service] Connection pool active=4/20
+2026-08-14T09:04:38Z INFO  [orders-service] Order order_id=1005 completed in 83ms
+2026-08-14T09:15:00Z INFO  [orders-service] Health check passed, heap used=418MB/2048MB

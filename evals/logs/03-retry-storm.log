@@ -1,0 +1,12 @@
+2026-08-14T14:00:00Z INFO  [pricing-api] Service healthy, avg latency 42ms, rps=120
+2026-08-14T14:02:11Z WARN  [pricing-api] Upstream vendor-feed responded 503, returning cached price
+2026-08-14T14:02:12Z INFO  [mobile-client-gw] Retry policy: immediate, maxAttempts=unlimited, backoff=none
+2026-08-14T14:02:14Z WARN  [pricing-api] rps=980 (8x baseline), queue depth=412
+2026-08-14T14:02:19Z WARN  [mobile-client-gw] Retrying failed pricing call (attempt 47) order_ref=A-2231
+2026-08-14T14:02:23Z WARN  [pricing-api] rps=3400, queue depth=9100, rejecting new connections
+2026-08-14T14:02:25Z ERROR [pricing-api] Thread pool saturated: 200/200 workers busy
+2026-08-14T14:02:31Z ERROR [pricing-api] HTTP 429 returned to 2841 clients in last 10s
+2026-08-14T14:02:38Z ERROR [pricing-api] Request timeout: no worker available within 3000ms
+2026-08-14T14:03:02Z ERROR [pricing-api] Service degraded: p99 latency 28400ms
+2026-08-14T14:05:40Z INFO  [mobile-client-gw] Circuit breaker opened, retries suspended
+2026-08-14T14:06:15Z INFO  [pricing-api] rps=140, queue depth=8, recovering

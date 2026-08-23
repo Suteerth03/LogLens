@@ -1,0 +1,12 @@
+2026-08-14T09:00:00Z INFO  [report-service] Service started, heap max=2048MB
+2026-08-14T09:00:02Z INFO  [report-service] Cache 'user-prefs' initialized (maxSize=unbounded, eviction=none)
+2026-08-14T09:20:00Z INFO  [report-service] Cache 'user-prefs' size=45000 entries, heap used=612MB
+2026-08-14T09:35:00Z INFO  [report-service] Cache 'user-prefs' size=128000 entries, heap used=1104MB
+2026-08-14T09:48:00Z WARN  [report-service] GC pause 1840ms, heap used=1687MB
+2026-08-14T09:54:00Z INFO  [report-service] Cache 'user-prefs' size=241000 entries, heap used=1890MB
+2026-08-14T09:55:12Z WARN  [report-service] GC pause 4210ms, heap used=1982MB, reclaimed=12MB
+2026-08-14T09:55:40Z INFO  [report-service] Handling report request report_id=7781
+2026-08-14T09:56:03Z ERROR [report-service] java.lang.OutOfMemoryError: Java heap space
+2026-08-14T09:56:03Z ERROR [report-service]     at com.acme.report.ReportBuilder.build(ReportBuilder.java:88)
+2026-08-14T09:56:04Z ERROR [report-service] Request report_id=7781 FAILED: OutOfMemoryError
+2026-08-14T09:56:30Z ERROR [report-service] Health check failed: heap exhausted, process unresponsive

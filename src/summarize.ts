@@ -223,6 +223,8 @@ export interface IncidentSummary {
   citedEvidence: IncidentEvidence[];
   searchTermsUsed: string[];
   evidenceCount: { fromSearch: number; fromExpansion: number };
+  /** Every line id that reached the model — lets callers tell a retrieval miss from a reasoning miss. */
+  retrievedIds: number[];
   retried: boolean;
 }
 
@@ -312,6 +314,7 @@ export async function summarizeIncident(
     citedEvidence,
     searchTermsUsed: terms,
     evidenceCount,
+    retrievedIds: evidence.map((e) => e.id),
     retried,
   };
 }

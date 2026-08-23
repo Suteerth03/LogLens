@@ -1,0 +1,11 @@
+2026-08-14T16:00:00Z INFO  [api-gateway] Routing to auth pool: node-a, node-b, node-c
+2026-08-14T16:03:12Z WARN  [node-c] NTP sync failed: no response from time.internal (last successful sync 9h ago)
+2026-08-14T16:20:41Z ERROR [node-c] JWT rejected: token 'nbf' claim is in the future (nbf=16:20:39Z, now=16:18:22Z)
+2026-08-14T16:21:09Z ERROR [node-c] JWT rejected: token 'nbf' claim is in the future (nbf=16:21:07Z, now=16:18:50Z)
+2026-08-14T16:22:30Z INFO  [node-a] JWT validated successfully for user_id=5512
+2026-08-14T16:22:31Z INFO  [node-b] JWT validated successfully for user_id=7781
+2026-08-14T16:23:04Z ERROR [node-c] JWT rejected: token 'nbf' claim is in the future (nbf=16:23:02Z, now=16:20:45Z)
+2026-08-14T16:24:00Z WARN  [api-gateway] Auth failure rate 33% — errors isolated to node-c
+2026-08-14T16:25:18Z WARN  [node-c] System clock differs from peers by -139s
+2026-08-14T16:40:00Z INFO  [node-c] NTP sync restored, clock adjusted +139s
+2026-08-14T16:41:12Z INFO  [node-c] JWT validated successfully for user_id=3390

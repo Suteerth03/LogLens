@@ -1,0 +1,11 @@
+2026-08-14T13:00:00Z INFO  [payments-service] Processor healthy, decline rate 2.1%
+2026-08-14T13:04:30Z INFO  [config-service] FX rate table reloaded: source=vendor-b (previous source=vendor-a)
+2026-08-14T13:04:31Z WARN  [config-service] FX rate for INR quoted as 0.0119 (vendor-a last quoted 83.4) — unit convention differs
+2026-08-14T13:06:12Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4410, amount=INR 7012800.00)
+2026-08-14T13:06:44Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4411, amount=INR 4200000.00)
+2026-08-14T13:07:20Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4412, amount=INR 9987000.00)
+2026-08-14T13:08:02Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4413, amount=INR 5540000.00)
+2026-08-14T13:09:15Z WARN  [payments-service] Decline rate 94.7% (baseline 2.1%)
+2026-08-14T13:09:50Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4414, amount=INR 6120000.00)
+2026-08-14T13:11:33Z INFO  [payments-service] Sample cart total before conversion: USD 84.00
+2026-08-14T13:12:00Z ERROR [payments-service] Payment declined by processor: amount exceeds per-transaction limit (txn_id=P-4415, amount=INR 7012800.00)

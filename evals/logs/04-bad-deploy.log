@@ -1,0 +1,10 @@
+2026-08-14T11:00:00Z INFO  [auth-service] Service healthy, login success rate 99.4%
+2026-08-14T11:14:58Z INFO  [deploy-agent] Starting rollout of auth-service v4.12.0 (previous: v4.11.3)
+2026-08-14T11:15:02Z INFO  [deploy-agent] Config change applied: token.signing.algorithm HS256 -> RS256
+2026-08-14T11:15:30Z INFO  [auth-service] Instance restarted on v4.12.0
+2026-08-14T11:16:04Z ERROR [auth-service] Token validation failed: signature mismatch for token issued at 11:09:12Z
+2026-08-14T11:16:11Z ERROR [auth-service] Token validation failed: signature mismatch for token issued at 11:11:47Z
+2026-08-14T11:16:33Z ERROR [auth-service] Token validation failed: signature mismatch for token issued at 11:02:05Z
+2026-08-14T11:17:00Z WARN  [auth-service] Login success rate dropped to 12.8%
+2026-08-14T11:18:20Z ERROR [session-service] 4021 active sessions invalidated, users forced to re-authenticate
+2026-08-14T11:22:45Z WARN  [support-desk] Ticket volume spike: 340 reports of unexpected logout
