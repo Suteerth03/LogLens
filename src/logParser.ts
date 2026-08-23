@@ -57,6 +57,11 @@ export function searchLogs(
     }));
 }
 
+export const ANOMALY_LEVELS = new Set(["ERROR", "FATAL", "WARN", "WARNING"]);
+
+export const isAnomaly = (line: LogLine) =>
+  line.level !== undefined && ANOMALY_LEVELS.has(line.level.toUpperCase());
+
 function parseTimestampMs(ts: string | undefined): number | null {
   if (!ts) return null;
   const ms = Date.parse(ts.replace(" ", "T"));
@@ -78,7 +83,12 @@ function parseTimestampMs(ts: string | undefined): number | null {
 export function expandByTimeWindow(
   lines: LogLine[],
   seedIds: number[],
-  windowSeconds = 120,
+  // Asymmetric on purpose: causes precede symptoms. A config change, a failed
+  // NTP sync, or a deploy can land many minutes before the errors it produces,
+  // while evidence *after* the failure is mostly recovery noise. A symmetric
+  // ±120s window missed real upstream causes in eval cases 06 and 08.
+  windowSecondsBefore = 900,
+  windowSecondsAfter = 180,
   maxLines = 150
 ): LogLine[] {
   const seeds = new Set(seedIds);
@@ -89,9 +99,8 @@ export function expandByTimeWindow(
 
   if (seedTimes.length === 0) return [];
 
-  const windowMs = windowSeconds * 1000;
-  const from = Math.min(...seedTimes) - windowMs;
-  const to = Math.max(...seedTimes) + windowMs;
+  const from = Math.min(...seedTimes) - windowSecondsBefore * 1000;
+  const to = Math.max(...seedTimes) + windowSecondsAfter * 1000;
 
   return lines
     .filter((l) => !seeds.has(l.id))
@@ -101,6 +110,40 @@ export function expandByTimeWindow(
       line: e.line,
       distance: Math.min(...seedTimes.map((s) => Math.abs(s - e.t))),
     }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, maxLines)
+    .map((e) => e.line)
+    .sort((a, b) => a.id - b.id);
+}
+
+/**
+ * Returns every anomalous (WARN/ERROR/FATAL) line not already retrieved,
+ * nearest-in-time to a seed first, capped.
+ *
+ * Rationale: anomalous lines are rare and high-signal, and the line that
+ * explains an incident is very often itself a warning — "NTP sync failed",
+ * "unit convention differs", "rotation skipped". Time-window expansion alone
+ * misses these when the cause precedes the symptom by more than the window,
+ * and widening the window indefinitely just drags in routine INFO noise.
+ * Scanning anomalies globally is cheap because they are a small fraction of
+ * any real log.
+ */
+export function collectAnomalies(lines: LogLine[], excludeIds: number[], maxLines = 100): LogLine[] {
+  const exclude = new Set(excludeIds);
+  const seedTimes = lines
+    .filter((l) => exclude.has(l.id))
+    .map((l) => parseTimestampMs(l.timestamp))
+    .filter((t): t is number => t !== null);
+
+  const distanceToSeed = (l: LogLine): number => {
+    const t = parseTimestampMs(l.timestamp);
+    if (t === null || seedTimes.length === 0) return Number.MAX_SAFE_INTEGER;
+    return Math.min(...seedTimes.map((s) => Math.abs(s - t)));
+  };
+
+  return lines
+    .filter((l) => !exclude.has(l.id) && isAnomaly(l))
+    .map((l) => ({ line: l, distance: distanceToSeed(l) }))
     .sort((a, b) => a.distance - b.distance)
     .slice(0, maxLines)
     .map((e) => e.line)

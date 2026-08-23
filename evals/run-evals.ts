@@ -36,8 +36,23 @@ interface CaseResult {
   error?: string;
 }
 
+/**
+ * Models routinely emit typographic punctuation — U+2011 non-breaking hyphen
+ * in "node‑c", curly quotes, non-breaking spaces. Naive substring matching
+ * then reports a concept as missing when the answer plainly contains it,
+ * which scored a correct answer as FAIL before this was normalized.
+ */
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\u2010-\u2015\u2212]/g, "-") // hyphens, dashes, minus sign
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u00a0/g, " "); // non-breaking space
+}
+
 const hitsGroup = (haystack: string, group: string[]) =>
-  group.some((needle) => haystack.includes(needle.toLowerCase()));
+  group.some((needle) => haystack.includes(normalize(needle)));
 
 /**
  * The free tier enforces a per-DAY request cap (20 at time of writing) as well
@@ -48,7 +63,13 @@ const hitsGroup = (haystack: string, group: string[]) =>
 function classifyQuotaError(message: string): { daily: boolean; retryAfterMs: number | null } {
   const daily = /PerDay/i.test(message);
   const m = message.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
-  return { daily, retryAfterMs: m ? Math.ceil(parseFloat(m[1]) * 1000) + 1000 : null };
+  if (m) return { daily, retryAfterMs: Math.ceil(parseFloat(m[1]) * 1000) + 1000 };
+  // Groq signals a per-minute token-budget overrun as a 413 with no retry
+  // hint; the budget refills on a rolling minute, so waiting one out works.
+  if (/rate_limit_exceeded|tokens per minute|TPM/i.test(message)) {
+    return { daily: false, retryAfterMs: 62_000 };
+  }
+  return { daily, retryAfterMs: null };
 }
 
 class DailyQuotaExhausted extends Error {}
@@ -59,7 +80,7 @@ function scoreNoFailureCase(c: EvalCase, result: IncidentSummary | { error: stri
   if ("error" in result) {
     return { passed: true, retrievalOk: true, citationOk: true, mentionOk: true, rootCause: `(no evidence) ${result.error}` };
   }
-  const text = result.rootCause.toLowerCase();
+  const text = normalize(result.rootCause);
   const mentionOk = c.mustMention.every((g) => hitsGroup(text, g));
   return {
     passed: mentionOk,
@@ -123,7 +144,7 @@ async function runCase(c: EvalCase): Promise<CaseResult> {
     return { ...base, error: result.error, seconds };
   }
 
-  const text = result.rootCause.toLowerCase();
+  const text = normalize(result.rootCause);
   const citedIds = new Set(result.citedEvidence.map((e) => e.id));
   const retrievedIds = new Set(result.retrievedIds);
 
@@ -151,9 +172,16 @@ async function runCase(c: EvalCase): Promise<CaseResult> {
 }
 
 async function main() {
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY is not set. Get a free key at https://aistudio.google.com/apikey");
+  if (!process.env.GROQ_API_KEY) {
+    console.error("GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys");
     process.exit(1);
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn(
+      "warning: GEMINI_API_KEY not set — verification will fall back to the same provider as the\n" +
+        "         hypothesis generator, so the check is no longer independent. Results still valid,\n" +
+        "         but weaker than a cross-provider run.\n"
+    );
   }
 
   const filters = process.argv.slice(2);

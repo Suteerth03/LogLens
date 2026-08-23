@@ -1,35 +1,22 @@
-import { GoogleGenAI } from "@google/genai";
-import { searchLogs, expandByTimeWindow, type LogLine } from "./logParser.js";
+import { searchLogs, expandByTimeWindow, collectAnomalies, isAnomaly, type LogLine } from "./logParser.js";
+import { MODELS, generateJson, isConfigured, type ModelSpec } from "./providers.js";
 
-// Mixed-model strategy: Flash for the cheap keyword-extraction step, Pro for
-// the two steps where reasoning quality actually matters (root-cause
-// generation and the hallucination-check verification pass). Same split as
-// the original Haiku/Opus design — just swapped to Gemini's free tier.
-const FLASH = "gemini-3.6-flash";
-// Free tier currently shows zero quota for pro-tier models on this key
-// (confirmed via a live 429 with `limit: 0`, not a temporary rate limit) —
-// using Flash for all three steps until that's resolved. See README.
-const PRO = "gemini-3.6-flash";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-// Gemini's responseJsonSchema accepts a restricted subset of JSON Schema —
-// hand-written plain objects here rather than a Zod->JSON-Schema conversion,
-// since the subset doesn't support every keyword a converter might emit.
+// Schemas stay within the intersection Groq strict mode and Gemini's
+// responseJsonSchema both accept: no minItems/maxItems, additionalProperties
+// always false. Count limits live in descriptions instead of keywords.
 const SEARCH_TERMS_SCHEMA = {
   type: "object",
   properties: {
     terms: {
       type: "array",
       items: { type: "string" },
-      minItems: 1,
-      maxItems: 5,
       description:
-        "Short keywords/phrases likely to appear verbatim in log lines related to the question " +
-        "(error names, service names, identifiers) — not a paraphrase of the question itself.",
+        "One to five short keywords/phrases likely to appear verbatim in log lines related to the " +
+        "question (error names, service names, identifiers) — not a paraphrase of the question.",
     },
   },
   required: ["terms"],
+  additionalProperties: false,
 } as const;
 
 const HYPOTHESIS_SCHEMA = {
@@ -44,6 +31,7 @@ const HYPOTHESIS_SCHEMA = {
     },
   },
   required: ["rootCause", "confidence", "citedLineIds"],
+  additionalProperties: false,
 } as const;
 
 const VERIFICATION_SCHEMA = {
@@ -66,11 +54,12 @@ const VERIFICATION_SCHEMA = {
       type: "array",
       items: { type: "integer" },
       description:
-        "Ids of retrieved lines that the claim fails to account for — especially ones suggesting a " +
-        "deeper cause. Empty if the claim is complete.",
+        "Ids of retrieved lines the claim fails to account for — especially ones suggesting a deeper " +
+        "cause. Empty if the claim is complete.",
     },
   },
   required: ["soundness", "completeness", "explanation", "overlookedLineIds"],
+  additionalProperties: false,
 } as const;
 
 interface SearchTerms {
@@ -81,46 +70,39 @@ interface Hypothesis {
   confidence: "high" | "medium" | "low";
   citedLineIds: number[];
 }
-export interface Verification {
+interface VerificationCore {
   soundness: "supported" | "partially_supported" | "not_supported";
   completeness: "complete" | "incomplete";
   explanation: string;
   overlookedLineIds: number[];
 }
-
-async function generateJson<T>(model: string, systemInstruction: string, prompt: string, schema: object): Promise<T | null> {
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      systemInstruction,
-      responseMimeType: "application/json",
-      responseJsonSchema: schema,
-    },
-  });
-  if (!response.text) return null;
-  try {
-    return JSON.parse(response.text) as T;
-  } catch {
-    return null;
-  }
+export interface Verification extends VerificationCore {
+  /** Which model judged the claim. */
+  verifierModel: string;
+  /**
+   * True when the verifier ran on a different provider than the hypothesis
+   * generator. False means the check shares the generator's blind spots and
+   * is correspondingly weaker — surfaced rather than hidden.
+   */
+  independent: boolean;
 }
 
 /**
- * Step 1: turn a natural-language question into search terms likely to
- * appear verbatim in log lines, instead of substring-matching the raw
- * question.
+ * Step 1: turn a natural-language question into search terms likely to appear
+ * verbatim in log lines, instead of substring-matching the raw question.
  */
 async function extractSearchTerms(query: string): Promise<string[]> {
   const result = await generateJson<SearchTerms>(
-    FLASH,
+    MODELS.extraction,
+    "search_terms",
     "You turn a natural-language incident question into short search keywords that would " +
       "literally appear in application log lines. Prefer terms likely to appear verbatim " +
       "(error class names, service names, identifiers) over paraphrases of the question.",
     query,
     SEARCH_TERMS_SCHEMA
   );
-  return result?.terms ?? [query];
+  const terms = result?.terms?.filter((t) => t.trim().length > 0) ?? [];
+  return terms.length > 0 ? terms.slice(0, 5) : [query];
 }
 
 export interface IncidentEvidence {
@@ -149,29 +131,41 @@ async function generateHypothesis(
   ].join("\n");
 
   return generateJson<Hypothesis>(
-    PRO,
+    MODELS.hypothesis,
+    "hypothesis",
     "You are a root-cause analysis assistant for application logs. You are given a question " +
       "and a set of retrieved log lines, each tagged with an id. Base your root-cause hypothesis " +
       "ONLY on these lines — do not invent services, errors, or events not present in the evidence. " +
       "Look past the immediate failure: if the evidence shows an upstream or cross-service cause " +
-      "(something holding a resource, a slow dependency), that is the root cause, not the symptom " +
-      "it produced. Cite the specific line ids that support your conclusion.",
+      "(something holding a resource, a slow dependency, a config change), that is the root cause, " +
+      "not the symptom it produced. If the evidence shows no failure at all, say so plainly rather " +
+      "than manufacturing one. Cite the specific line ids that support your conclusion.",
     prompt,
     HYPOTHESIS_SCHEMA
   );
 }
 
+const VERIFIER_SYSTEM =
+  "You are a strict fact-checker for root-cause claims about logs. Judge two things independently. " +
+  "(1) SOUNDNESS: do the cited lines actually substantiate the claim? Be skeptical — a " +
+  "plausible-sounding claim not directly backed by its cited lines is not 'supported'. " +
+  "(2) COMPLETENESS: scan the FULL evidence set for anything the claim fails to account for. " +
+  "If other lines reveal a deeper or upstream cause — another service holding a shared resource, " +
+  "a slow query, a config or deploy change, a failing dependency — then the claim describes a " +
+  "symptom rather than the root cause and is 'incomplete'. List those overlooked line ids. A claim " +
+  "can be perfectly sound and still incomplete; judge the axes separately.";
+
 /**
- * Step 3 — verification on two independent axes.
+ * Step 3 — verification on two independent axes, on a different model family.
  *
- * The earlier single-axis version was handed ONLY the cited lines, which made
+ * An earlier single-axis version was handed ONLY the cited lines, which made
  * it structurally incapable of catching an incomplete answer: a claim that
  * correctly describes a symptom will always look "supported" by the lines it
- * chose to cite. Real testing hit exactly that — a verdict of `supported` on
- * an answer that missed the actual upstream cause. So the verifier now also
- * sees the FULL evidence set and judges:
- *   - soundness:    do the cited lines substantiate the claim?
- *   - completeness: does other retrieved evidence point somewhere the claim missed?
+ * chose to cite. It now also sees the FULL evidence set.
+ *
+ * Runs on a different provider than `generateHypothesis` so the check does not
+ * inherit the generator's blind spots. Falls back to a same-provider model if
+ * the cross-provider one is unavailable, and reports that it did.
  */
 async function verifyHypothesis(
   hypothesis: Hypothesis,
@@ -192,26 +186,36 @@ async function verifyHypothesis(
     renderEvidence(allEvidence),
   ].join("\n");
 
-  const result = await generateJson<Verification>(
-    PRO,
-    "You are a strict fact-checker for root-cause claims about logs. Judge two things independently. " +
-      "(1) SOUNDNESS: do the cited lines actually substantiate the claim? Be skeptical — a " +
-      "plausible-sounding claim not directly backed by its cited lines is not 'supported'. " +
-      "(2) COMPLETENESS: scan the FULL evidence set for anything the claim fails to account for. " +
-      "If other lines reveal a deeper or upstream cause — another service holding a shared resource, " +
-      "a slow query, a dependency failure — then the claim describes a symptom rather than the root " +
-      "cause and is 'incomplete'. List those overlooked line ids. A claim can be perfectly sound and " +
-      "still incomplete; judge the axes separately.",
-    prompt,
-    VERIFICATION_SCHEMA
-  );
+  const attempt = async (spec: ModelSpec): Promise<Verification | null> => {
+    const core = await generateJson<VerificationCore>(spec, "verification", VERIFIER_SYSTEM, prompt, VERIFICATION_SCHEMA);
+    if (!core) return null;
+    return {
+      ...core,
+      overlookedLineIds: core.overlookedLineIds ?? [],
+      verifierModel: spec.model,
+      independent: spec.provider !== MODELS.hypothesis.provider,
+    };
+  };
 
+  if (isConfigured(MODELS.verification.provider)) {
+    try {
+      const result = await attempt(MODELS.verification);
+      if (result) return result;
+    } catch {
+      // Cross-provider verifier unavailable (quota, outage, bad key) — degrade
+      // to same-provider rather than failing the whole pipeline.
+    }
+  }
+
+  const fallback = await attempt(MODELS.verificationFallback);
   return (
-    result ?? {
+    fallback ?? {
       soundness: "not_supported",
       completeness: "incomplete",
       explanation: "Verification call failed to parse.",
       overlookedLineIds: [],
+      verifierModel: MODELS.verificationFallback.model,
+      independent: false,
     }
   );
 }
@@ -228,8 +232,6 @@ export interface IncidentSummary {
   retried: boolean;
 }
 
-const ANOMALY_LEVELS = new Set(["ERROR", "FATAL", "WARN", "WARNING"]);
-
 /**
  * Full pipeline: extract search terms -> retrieve (lexical + time-window
  * expansion) -> generate a grounded hypothesis -> verify on soundness and
@@ -240,12 +242,8 @@ export async function summarizeIncident(
   query: string,
   lines: LogLine[]
 ): Promise<IncidentSummary | { error: string }> {
-  // Fail fast with a clear message — without this, an unset key makes the
-  // SDK fall back to trying Google Cloud Application Default Credentials
-  // and fail with an unrelated-looking "Could not load the default
-  // credentials" error instead of the obvious "set GEMINI_API_KEY" one.
-  if (!process.env.GEMINI_API_KEY) {
-    return { error: "GEMINI_API_KEY is not set. Get a free key at https://aistudio.google.com/apikey" };
+  if (!isConfigured("groq")) {
+    return { error: "GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys" };
   }
 
   const terms = await extractSearchTerms(query);
@@ -268,12 +266,18 @@ export async function summarizeIncident(
   const byId = new Map(lines.map((l) => [l.id, l]));
   const matchedIds = [...evidenceById.keys()];
   const anomalyIds = matchedIds.filter((id) => {
-    const level = byId.get(id)?.level?.toUpperCase();
-    return level !== undefined && ANOMALY_LEVELS.has(level);
+    const line = byId.get(id);
+    return line !== undefined && isAnomaly(line);
   });
   const seedIds = anomalyIds.length > 0 ? anomalyIds : matchedIds;
 
   for (const l of expandByTimeWindow(lines, seedIds)) {
+    evidenceById.set(l.id, { id: l.id, line: l.raw, viaExpansion: true });
+  }
+  // Anomalous lines anywhere in the log, not just inside the window — the
+  // explaining line is often a warning that precedes the errors by more than
+  // any window we'd want to apply to ordinary INFO lines.
+  for (const l of collectAnomalies(lines, [...evidenceById.keys()])) {
     evidenceById.set(l.id, { id: l.id, line: l.raw, viaExpansion: true });
   }
 

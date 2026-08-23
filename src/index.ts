@@ -103,7 +103,8 @@ server.registerTool(
     const text = [
       `Root cause (${result.confidence} confidence): ${result.rootCause}`,
       "",
-      `Verification — soundness: ${v.soundness}, completeness: ${v.completeness}`,
+      `Verification — soundness: ${v.soundness}, completeness: ${v.completeness} ` +
+        `(checked by ${v.verifierModel}${v.independent ? ", independent of the generator" : ", SAME provider as generator — weaker check"})`,
       v.explanation,
       result.retried
         ? "(Regenerated once: the first hypothesis was rejected as unsound or incomplete.)"
