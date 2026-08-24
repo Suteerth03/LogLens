@@ -206,6 +206,32 @@ Verified end-to-end against the live deployment (not just a health check):
 tool listing and a real `search_logs` call both returned correct results
 through the public URL.
 
+### Access control — public ingress needs it
+
+`--ingress external` means the URL is reachable by anyone on the internet.
+Since `summarize_incident` spends the *deployer's* own Groq/Gemini quota on
+every call regardless of who's asking — not the caller's — an unauthenticated
+public endpoint means anyone who finds the URL can drain that quota (or, for
+a busier deployment, run up a bill). The data itself isn't sensitive (a
+synthetic sample log), so this is a cost/availability risk, not a privacy
+one, but worth closing before sharing the link anywhere public.
+
+Fixed with a shared-secret header check ahead of `transport.handleRequest`:
+set `LOGLENS_ACCESS_TOKEN` and every request must carry a matching
+`X-LogLens-Token` header, or it's rejected with 401 before it reaches the MCP
+layer at all. Unset (the default for local/stdio use), the endpoint stays
+open — this only matters once you're exposing it publicly.
+
+```bash
+az containerapp secret set --name loglens --resource-group loglens-rg \
+  --secrets loglens-access-token=<your-generated-token>
+az containerapp update --name loglens --resource-group loglens-rg \
+  --set-env-vars LOGLENS_ACCESS_TOKEN=secretref:loglens-access-token
+```
+
+Verified against the live deployment: a request without the header now
+returns 401; the identical request with `X-LogLens-Token` set returns 200.
+
 ## Environment variables
 
 | Variable | Required for | Notes |
@@ -213,6 +239,7 @@ through the public URL.
 | `GROQ_API_KEY` | `summarize_incident` (extraction + hypothesis) | Get one free at [console.groq.com/keys](https://console.groq.com/keys). `search_logs` and `get_error_context` work without it. |
 | `GEMINI_API_KEY` | independent verification | Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Without it, verification falls back to same-provider (Groq) and is no longer independent — reported via `Verification.independent`, not silently downgraded. |
 | `LOGLENS_LOG_FILE` | optional | Point at a real log file instead of the bundled sample. |
+| `LOGLENS_ACCESS_TOKEN` | optional, recommended for any public deployment | Requires every `/mcp` request to carry a matching `X-LogLens-Token` header. Unset = open (fine for local/stdio use, not for a public URL). |
 | `MCP_TRANSPORT` | optional | `http` runs the network-reachable server (used by Docker); unset/anything else runs stdio (used by Claude Desktop/Code). |
 | `PORT` | optional | HTTP port, default `3000`. |
 

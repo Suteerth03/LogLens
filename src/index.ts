@@ -169,6 +169,19 @@ async function main() {
         res.end(JSON.stringify({ error: "not found — POST to /mcp" }));
         return;
       }
+      // With `--ingress external` the /mcp endpoint is reachable by anyone
+      // on the internet with the URL. Since summarize_incident spends the
+      // deployer's own Groq/Gemini quota on every call regardless of who's
+      // asking, an unauthenticated public endpoint means anyone who finds
+      // the URL can drain that quota. LOGLENS_ACCESS_TOKEN gates it with a
+      // shared secret; unset (local/dev use) leaves it open, matching prior
+      // behavior for stdio and local HTTP testing.
+      const accessToken = process.env.LOGLENS_ACCESS_TOKEN;
+      if (accessToken && req.headers["x-loglens-token"] !== accessToken) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized — missing or incorrect X-LogLens-Token header" }));
+        return;
+      }
       try {
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
