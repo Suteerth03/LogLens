@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLog, searchLogs, getContext, type LogLine } from "./logParser.js";
 import { summarizeIncident } from "./summarize.js";
+import { checkRateLimit, clientIp } from "./rateLimit.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -138,6 +139,28 @@ function createServer(): McpServer {
   return server;
 }
 
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    req.on("error", reject);
+  });
+}
+
+/** True for a JSON-RPC `tools/call` request whose tool is `summarize_incident` — the only tool that spends LLM quota. Handles both a single request and a batch (array) body. */
+function isSummarizeIncidentCall(body: unknown): boolean {
+  const isMatch = (msg: unknown): boolean =>
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<string, unknown>).method === "tools/call" &&
+    typeof (msg as Record<string, unknown>).params === "object" &&
+    (msg as Record<string, unknown>).params !== null &&
+    ((msg as Record<string, { name?: unknown }>).params as { name?: unknown }).name === "summarize_incident";
+
+  return Array.isArray(body) ? body.some(isMatch) : isMatch(body);
+}
+
 /**
  * stdio (default): what Claude Desktop/Code use, spawning this as a local
  * child process. HTTP (MCP_TRANSPORT=http): a network-reachable server for
@@ -170,12 +193,11 @@ async function main() {
         return;
       }
       // With `--ingress external` the /mcp endpoint is reachable by anyone
-      // on the internet with the URL. Since summarize_incident spends the
-      // deployer's own Groq/Gemini quota on every call regardless of who's
-      // asking, an unauthenticated public endpoint means anyone who finds
-      // the URL can drain that quota. LOGLENS_ACCESS_TOKEN gates it with a
-      // shared secret; unset (local/dev use) leaves it open, matching prior
-      // behavior for stdio and local HTTP testing.
+      // on the internet with the URL. LOGLENS_ACCESS_TOKEN is available as an
+      // optional hard gate (shared-secret header) for a private deployment;
+      // unset, as on the public demo instance, the endpoint stays open and
+      // is protected by rate limiting instead (see rateLimit.ts) so anyone
+      // can try it without a handoff step.
       const accessToken = process.env.LOGLENS_ACCESS_TOKEN;
       if (accessToken && req.headers["x-loglens-token"] !== accessToken) {
         res.writeHead(401, { "content-type": "application/json" });
@@ -183,6 +205,31 @@ async function main() {
         return;
       }
       try {
+        // Body must be read and parsed here — rather than left for the
+        // transport to read from the stream — so summarize_incident calls
+        // specifically can be rate-limited before touching the LLM pipeline.
+        // The parsed body is then handed to handleRequest(), which accepts
+        // one precisely for this case (a consumer that already read the
+        // stream), so the request isn't read twice.
+        const rawBody = await readBody(req);
+        let parsedBody: unknown;
+        try {
+          parsedBody = rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+
+        if (isSummarizeIncidentCall(parsedBody)) {
+          const result = checkRateLimit(clientIp(req));
+          if (!result.allowed) {
+            res.writeHead(429, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: result.reason }));
+            return;
+          }
+        }
+
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
         res.on("close", () => {
@@ -190,7 +237,7 @@ async function main() {
           server.close();
         });
         await server.connect(transport);
-        await transport.handleRequest(req, res);
+        await transport.handleRequest(req, res, parsedBody);
       } catch (err) {
         console.error("Error handling MCP request:", err);
         if (!res.headersSent) {

@@ -209,28 +209,48 @@ through the public URL.
 ### Access control — public ingress needs it
 
 `--ingress external` means the URL is reachable by anyone on the internet.
-Since `summarize_incident` spends the *deployer's* own Groq/Gemini quota on
-every call regardless of who's asking — not the caller's — an unauthenticated
-public endpoint means anyone who finds the URL can drain that quota (or, for
-a busier deployment, run up a bill). The data itself isn't sensitive (a
-synthetic sample log), so this is a cost/availability risk, not a privacy
-one, but worth closing before sharing the link anywhere public.
+`summarize_incident` spends the *deployer's* own Groq/Gemini quota on every
+call regardless of who's asking, not the caller's — so an unprotected public
+endpoint means anyone who finds the URL can drain that quota. The data
+itself isn't sensitive (a synthetic sample log), so this is a cost/
+availability risk, not a privacy one — but real enough that it needed a real
+fix rather than being left open by accident.
 
-Fixed with a shared-secret header check ahead of `transport.handleRequest`:
-set `LOGLENS_ACCESS_TOKEN` and every request must carry a matching
-`X-LogLens-Token` header, or it's rejected with 401 before it reaches the MCP
-layer at all. Unset (the default for local/stdio use), the endpoint stays
-open — this only matters once you're exposing it publicly.
+Two options were available: a hard auth gate (shared-secret header,
+implemented in `src/index.ts` and available via `LOGLENS_ACCESS_TOKEN` for a
+private deployment), or open access protected by rate limiting so anyone
+can try the live demo without a handoff step. **The public instance runs
+the second** — appropriate for a demo link shared with recruiters/
+interviewers where a token exchange would be friction, not security.
 
-```bash
-az containerapp secret set --name loglens --resource-group loglens-rg \
-  --secrets loglens-access-token=<your-generated-token>
-az containerapp update --name loglens --resource-group loglens-rg \
-  --set-env-vars LOGLENS_ACCESS_TOKEN=secretref:loglens-access-token
-```
+`src/rateLimit.ts` enforces two independent limits, checked *before* a
+request reaches the LLM pipeline at all, and scoped to `summarize_incident`
+specifically — `search_logs`/`get_error_context` cost nothing and stay
+unlimited:
 
-Verified against the live deployment: a request without the header now
-returns 401; the identical request with `X-LogLens-Token` set returns 200.
+- **Per-IP**: 3 calls/hour, stops one source (or a runaway script) from
+  hogging it.
+- **Global daily cap**: 15 calls/day across *all* visitors combined. This
+  matters more than it might look — Gemini's free tier caps at 20
+  requests/day total, shared regardless of how many distinct people show
+  up, so a per-IP limit alone wouldn't protect it; ten different visitors
+  making two calls each would still exhaust it.
+
+In-memory, deliberately — this runs at `--max-replicas 1`, and scale-to-zero
+already resets in-memory state on a cold start, so a persistent store would
+be false precision for a single-instance demo.
+
+Verified against the live deployment: `search_logs` succeeds with no header
+at all; 4 concurrent `summarize_incident` calls from the same source
+returned exactly 3× `200` and 1× `429`, matching the per-IP limit exactly.
+
+**A real Azure CLI gotcha hit while wiring this up, worth knowing:**
+`az containerapp update --set-env-vars` does not fully replace the env var
+list the way "set" implies — omitting a previously-set key does not remove
+it, and using the mutable `:latest` image tag meant Azure didn't detect a
+change worth deploying at all (no new revision was created) until
+`--revision-suffix` forced one explicitly. Removing an env var requires
+setting it to an explicit empty value (`KEY=""`), not omitting it.
 
 ## Environment variables
 
@@ -239,7 +259,7 @@ returns 401; the identical request with `X-LogLens-Token` set returns 200.
 | `GROQ_API_KEY` | `summarize_incident` (extraction + hypothesis) | Get one free at [console.groq.com/keys](https://console.groq.com/keys). `search_logs` and `get_error_context` work without it. |
 | `GEMINI_API_KEY` | independent verification | Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Without it, verification falls back to same-provider (Groq) and is no longer independent — reported via `Verification.independent`, not silently downgraded. |
 | `LOGLENS_LOG_FILE` | optional | Point at a real log file instead of the bundled sample. |
-| `LOGLENS_ACCESS_TOKEN` | optional, recommended for any public deployment | Requires every `/mcp` request to carry a matching `X-LogLens-Token` header. Unset = open (fine for local/stdio use, not for a public URL). |
+| `LOGLENS_ACCESS_TOKEN` | optional, alternative to rate limiting | Requires every `/mcp` request to carry a matching `X-LogLens-Token` header — a hard gate for a private deployment. Unset (the public instance's setting) relies on the built-in rate limiting instead, so anyone can try the demo without a handoff step. |
 | `MCP_TRANSPORT` | optional | `http` runs the network-reachable server (used by Docker); unset/anything else runs stdio (used by Claude Desktop/Code). |
 | `PORT` | optional | HTTP port, default `3000`. |
 
