@@ -28,7 +28,8 @@ whether the model's answer is actually grounded in the log data.
 - **8-case eval suite**, deterministic scoring, 8/8 passing. ✅
 - **Dockerized**, runs as a network-reachable HTTP server, verified
   end-to-end against a live container. ✅
-- **Next:** cloud deployment (Azure Container Apps or similar), a demo GIF.
+- **Deployed on Azure Container Apps.** ✅ Live: https://loglens.livelymushroom-3f0e315d.centralindia.azurecontainerapps.io
+- **Next:** a demo GIF.
 
 ## Tools
 
@@ -161,6 +162,49 @@ cheap, since the server only holds tool *definitions*, no per-connection
 state (none of these tools carry state between calls anyway). Verified
 against a real running container: `search_logs` and a full `summarize_incident`
 pass both completed correctly end-to-end after the fix.
+
+## Deployment
+
+**Live:** https://loglens.livelymushroom-3f0e315d.centralindia.azurecontainerapps.io
+
+Deployed on **Azure Container Apps** (Consumption plan). The image is pushed
+to Docker Hub (public — nothing sensitive is baked into it; secrets are
+injected at runtime, not build time) rather than Azure Container Registry,
+which avoids ACR's ~$5/month Basic-tier cost entirely:
+
+```bash
+docker tag loglens:local <dockerhub-user>/loglens:latest
+docker push <dockerhub-user>/loglens:latest
+
+az group create --name loglens-rg --location centralindia
+az containerapp env create --name loglens-env --resource-group loglens-rg --location centralindia
+
+az containerapp create \
+  --name loglens \
+  --resource-group loglens-rg \
+  --environment loglens-env \
+  --image docker.io/<dockerhub-user>/loglens:latest \
+  --target-port 3000 \
+  --ingress external \
+  --min-replicas 0 --max-replicas 1 \
+  --cpu 0.25 --memory 0.5Gi \
+  --secrets groq-api-key=<key> gemini-api-key=<key> \
+  --env-vars GROQ_API_KEY=secretref:groq-api-key GEMINI_API_KEY=secretref:gemini-api-key
+```
+
+**`--min-replicas 0` is deliberate, not a default left alone.** Azure's
+"Always Free" grant (180K vCPU-seconds + 2M requests/month) is
+usage-metered, not time-based — an always-on replica at even the smallest
+size (0.25 vCPU) burns through that grant in about 8 days of continuous
+uptime, then starts drawing on the temporary $200 trial credit instead of
+staying free indefinitely. Scale-to-zero means billing only accrues on
+actual requests, which is what keeps a low-traffic demo project genuinely
+free long-term rather than free for 30 days. Tradeoff: a request after idle
+time takes a few seconds to cold-start a replica.
+
+Verified end-to-end against the live deployment (not just a health check):
+tool listing and a real `search_logs` call both returned correct results
+through the public URL.
 
 ## Environment variables
 
